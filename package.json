@@ -1,0 +1,26 @@
+{
+  "name": "osmextract-rn",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "start": "expo start",
+    "android": "expo start --android",
+    "ios": "expo start --ios",
+    "web": "expo start --web",
+    "postinstall": "node scripts/add-logbox-images.js"
+  },
+  "dependencies": {
+    "expo": "~54.0.33",
+    "expo-file-system": "~19.0.6",
+    "expo-sharing": "~14.0.4",
+    "expo-status-bar": "~3.0.9",
+    "react": "19.1.0",
+    "react-native": "0.81.5",
+    "react-native-maps": "1.20.1",
+    "@turf/bbox": "^7.1.0",
+    "@turf/boolean-point-in-polygon": "^7.1.0",
+    "@turf/area": "^7.1.0",
+    "@turf/helpers": "^7.1.0"
+  },
+  "private": true
+}
