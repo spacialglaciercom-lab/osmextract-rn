@@ -31,11 +31,7 @@
         "serviceAccountKeyPath": "./google-services.json",
         "track": "internal"
       },
-      "ios": {
-        "appleId": "your-apple-id@example.com",
-        "ascAppId": "your-app-store-connect-app-id",
-        "appleTeamId": "YOUR_TEAM_ID"
-      }
+      "ios": {}
     }
   }
 }

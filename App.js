@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import {
   StyleSheet,
   Text,
@@ -11,13 +11,9 @@ import {
   Platform,
   useWindowDimensions,
 } from 'react-native';
-import MapView, { Polygon, Marker } from 'react-native-maps';
+import { MapView, Polygon, Marker } from './components/MapView';
 import { StatusBar } from 'expo-status-bar';
-import {
-  writeAsStringAsync,
-  cacheDirectory,
-} from 'expo-file-system/legacy';
-import * as Sharing from 'expo-sharing';
+import { shareFile } from './lib/share';
 import {
   getBbox,
   getAreaKm2,
@@ -29,6 +25,23 @@ import {
   processOSMData,
 } from './lib/overpass';
 import { toOSM } from './lib/export';
+import { safeShareFile, validateShareData } from './lib/safe-share';
+import { logErrorDetails, safeStringify } from './debug-info';
+import { createSafeCallback, safeConsoleLog, wrapFunction, logMemoryUsage } from './ErrorRecovery';
+import { safeGetBbox } from './safe-bbox';
+import { safeConsole } from './safe-console';
+import { PERFORMANCE_CONFIG, PerformanceMonitor } from './performance-config';
+
+// Clean console and optimize startup
+useEffect(() => {
+  if (__DEV__) {
+    console.clear();
+    console.log('🗺️ OSM Extract RN - Leaflet Maps Initialized');
+    console.log('✅ Dark/Normal map toggle ready');
+    console.log('⚡ Performance optimizations:', PERFORMANCE_CONFIG.enableOptimizations ? 'ON' : 'OFF');
+    console.log('🌐 App running in development mode');
+  }
+}, []);
 
 const INITIAL_REGION = {
   latitude: 40.7128,
@@ -62,6 +75,7 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [progress, setProgress] = useState('');
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [mapStyle, setMapStyle] = useState('normal'); // 'normal' or 'dark'
 
   const pointsLngLat = points.map((p) => [p.longitude, p.latitude]);
   const polygonCoords =
@@ -78,8 +92,10 @@ export default function App() {
   const handleMapPress = useCallback(
     (e) => {
       if (points.length >= maxPoints) return;
+      PerformanceMonitor.start('Map Press Handler');
       const { latitude, longitude } = e.nativeEvent.coordinate;
       setPoints((prev) => [...prev, { latitude, longitude }]);
+      PerformanceMonitor.end('Map Press Handler');
     },
     [points.length, maxPoints]
   );
@@ -94,29 +110,125 @@ export default function App() {
   }, []);
 
   const extractData = useCallback(async () => {
-    if (!polygonCoords || polygonCoords.length < 4) return;
-    const bbox = getBbox(polygonCoords);
-    if (!bbox) return;
-
-    const selectedCats = Object.entries(categories)
-      .filter(([, v]) => v)
-      .map(([k]) => k);
-    if (selectedCats.length === 0) {
-      Alert.alert('Select categories', 'Choose at least one data category.');
+    PerformanceMonitor.start('Data Extraction');
+    console.log('Starting data extraction...');
+    
+    // Prevent concurrent extractions
+    if (loading) {
+      console.warn('Extraction already in progress');
       return;
     }
-
-    setLoading(true);
-    setProgress('Building query...');
+    
     try {
+      safeConsole.log('=== Starting extractData function ===');
+      
+      // Validate inputs with detailed logging
+      safeConsole.log('Validating polygonCoords:', polygonCoords?.length || 0, 'coordinates');
+      if (!polygonCoords || polygonCoords.length < 4) {
+        console.warn('Insufficient polygon coordinates');
+        return;
+      }
+      
+      // Additional validation to prevent stack issues
+      if (polygonCoords.length > 1000) {
+        console.warn('Too many coordinates, might cause performance issues');
+        Alert.alert('Warning', 'Area too large, please select a smaller area');
+        return;
+      }
+      
+      let bbox;
+      try {
+        // Use safe bbox calculation to prevent any stack issues
+        bbox = safeGetBbox(getBbox, polygonCoords, 'extractData');
+        
+        if (!bbox) {
+          console.warn('Could not calculate bounding box');
+          return;
+        }
+        
+        // Safe logging to prevent any console issues
+        safeConsole.log('Bounding box calculated successfully');
+        safeConsole.log('BBOX:', {
+          minLng: bbox[0].toFixed(4),
+          minLat: bbox[1].toFixed(4),
+          maxLng: bbox[2].toFixed(4),
+          maxLat: bbox[3].toFixed(4)
+        });
+        
+      } catch (bboxError) {
+        safeConsole.error('Bbox calculation error:', bboxError);
+        Alert.alert('Error', 'Failed to calculate area bounds');
+        return;
+      }
+
+      // Safely extract selected categories with validation
+      let selectedCats = [];
+      try {
+        // Safely log categories without circular reference issues
+        console.log('Processing categories...');
+        console.log('Categories keys:', Object.keys(categories));
+        console.log('Categories count:', Object.keys(categories).length);
+        
+        if (!categories || typeof categories !== 'object') {
+          throw new Error('Invalid categories data');
+        }
+        
+        selectedCats = Object.entries(categories)
+          .filter(([, v]) => v === true)
+          .map(([k]) => k);
+          
+        console.log('Selected categories:', selectedCats);
+        
+      } catch (catError) {
+        logErrorDetails(catError, 'Category Processing');
+        Alert.alert('Error', 'Failed to process category selection');
+        return;
+      }
+      
+      if (selectedCats.length === 0) {
+        Alert.alert('Select categories', 'Choose at least one data category.');
+        return;
+      }
+
+      setLoading(true);
+      setProgress('Building query...');
+      
       const query = buildOverpassQuery(bbox, selectedCats);
+      console.log('Overpass query built:', query);
+      
       setProgress('Fetching OSM data...');
       const data = await fetchOverpass(query, setProgress);
+      console.log('OSM data fetched, features:', data?.elements?.length || 0);
+      
       setProgress('Processing...');
+      
+      // Process the data with validation
       const geojson = processOSMData(data, polygonCoords);
+      
+      // Validate the processed data
+      if (!geojson || typeof geojson !== 'object') {
+        throw new Error('Invalid data format from OSM processing');
+      }
+      
+      // Check for reasonable data size to prevent memory issues
+      if (geojson.features && geojson.features.length > 10000) {
+        throw new Error('Too many features extracted. Try a smaller area.');
+      }
+      
+      // Additional validation to prevent circular references
+      try {
+        JSON.stringify(geojson);
+      } catch (e) {
+        throw new Error('Processed data contains circular references');
+      }
+      
+      console.log(`Processed ${geojson.features?.length || 0} features`);
       setExtractedData(geojson);
       setProgress('');
+      
     } catch (err) {
+      safeConsole.error('Data Extraction Error:', err);
+      logErrorDetails(err, 'Data Extraction');
       const msg =
         err?.name === 'AbortError'
           ? 'Request timed out. Try a smaller area.'
@@ -125,30 +237,30 @@ export default function App() {
       setProgress('');
     } finally {
       setLoading(false);
+      PerformanceMonitor.end('Data Extraction');
+      safeConsole.log('=== extractData function completed ===');
     }
   }, [polygonCoords, categories]);
 
-  const shareFile = useCallback(
+  const handleShareFile = useCallback(
     async (content, filename, mimeType, dialogTitle) => {
-      if (!extractedData) return;
+      if (!extractedData) {
+        console.warn('Share attempted with no extracted data');
+        return;
+      }
+      
       try {
-        const dir = cacheDirectory;
-        const filePath = `${dir}${filename}`;
-        await writeAsStringAsync(filePath, content, {
-          encoding: 'utf8',
-        });
-        const available = await Sharing.isAvailableAsync();
-        if (!available) {
-          Alert.alert(
-            'Sharing not available',
-            'Share sheet is not available on this device (e.g. simulator). File was saved to app cache.'
-          );
-          return;
+        // Validate the data before sharing
+        const validation = validateShareData(content);
+        if (!validation.valid) {
+          throw new Error(validation.error);
         }
-        await Sharing.shareAsync(filePath, {
-          mimeType,
-          dialogTitle,
-        });
+        
+        console.log(`Sharing ${filename} (${(validation.size / 1024).toFixed(2)}KB)`);
+        
+        // Use safe sharing to prevent stack overflow
+        await safeShareFile(shareFile, content, filename, mimeType, dialogTitle);
+        console.log(`Successfully shared: ${filename}`);
       } catch (err) {
         console.error('Share error:', err);
         Alert.alert(
@@ -161,24 +273,59 @@ export default function App() {
   );
 
   const shareGeoJSON = useCallback(async () => {
-    if (!extractedData) return;
-    await shareFile(
-      JSON.stringify(extractedData, null, 2),
-      'osm_data.geojson',
-      'application/geo+json',
-      'Export GeoJSON'
-    );
-  }, [extractedData, shareFile]);
-
-  const shareOSM = useCallback(async () => {
-    if (!extractedData) return;
-    const xml = toOSM(extractedData);
-    if (!xml) {
-      Alert.alert('No data', 'Nothing to export.');
+    PerformanceMonitor.start('Share GeoJSON');
+    if (!extractedData) {
+      console.warn('No extracted data available for sharing');
       return;
     }
-    await shareFile(xml, 'osm_data.osm', 'application/xml', 'Share OSM');
-  }, [extractedData, shareFile]);
+    
+    try {
+      console.log('Preparing GeoJSON for sharing...');
+      const geojsonString = JSON.stringify(extractedData, null, 2);
+      console.log(`GeoJSON string length: ${geojsonString.length} characters`);
+      
+      await handleShareFile(
+        geojsonString,
+        'osm_data.geojson',
+        'application/geo+json',
+        'Export GeoJSON'
+      );
+      
+      console.log('GeoJSON shared successfully');
+    } catch (err) {
+      console.error('GeoJSON share error:', err);
+      Alert.alert('Share failed', err.message || 'Failed to share GeoJSON file');
+    } finally {
+      PerformanceMonitor.end('Share GeoJSON');
+    }
+  }, [extractedData]);
+
+  const shareOSM = useCallback(async () => {
+    PerformanceMonitor.start('Share OSM');
+    if (!extractedData) {
+      console.warn('No extracted data available for sharing');
+      return;
+    }
+    
+    try {
+      console.log('Converting to OSM format...');
+      const xml = toOSM(extractedData);
+      
+      if (!xml) {
+        Alert.alert('No data', 'Nothing to export.');
+        return;
+      }
+      
+      console.log(`OSM XML length: ${xml.length} characters`);
+      await handleShareFile(xml, 'osm_data.osm', 'application/xml', 'Share OSM');
+      console.log('OSM shared successfully');
+    } catch (err) {
+      console.error('OSM share error:', err);
+      Alert.alert('Share failed', err.message || 'Failed to share OSM file');
+    } finally {
+      PerformanceMonitor.end('Share OSM');
+    }
+  }, [extractedData]);
 
   const stats = extractedData
     ? {
@@ -202,7 +349,7 @@ export default function App() {
       <View style={styles.header}>
         <Text style={styles.headerTitle}>OSM Boundary Extractor</Text>
         <Text style={styles.headerSub}>
-          Tap map to add {maxPoints} points (Apple Maps / MapKit)
+          Tap map to add {maxPoints} points (Leaflet Maps)
         </Text>
         <TouchableOpacity
           style={styles.menuBtn}
@@ -220,10 +367,11 @@ export default function App() {
         style={styles.map}
         initialRegion={INITIAL_REGION}
         onPress={handleMapPress}
-        mapType={Platform.OS === 'ios' ? 'mutedStandard' : 'standard'}
         showsUserLocation
         pitchEnabled
         rotateEnabled
+        mapStyle={mapStyle}
+        onMapStyleChange={setMapStyle}
       >
         {points.map((p, i) => (
           <Marker
@@ -380,6 +528,8 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     borderBottomWidth: 1,
     borderBottomColor: '#334155',
+    zIndex: 10,
+    elevation: 10,
   },
   headerTitle: {
     fontSize: 20,
@@ -396,6 +546,8 @@ const styles = StyleSheet.create({
     top: Platform.OS === 'ios' ? 48 : 24,
     right: 16,
     padding: 8,
+    zIndex: 11,
+    elevation: 11,
   },
   hamburger: {
     width: 24,
@@ -417,7 +569,8 @@ const styles = StyleSheet.create({
   overlay: {
     ...StyleSheet.absoluteFillObject,
     backgroundColor: 'rgba(0,0,0,0.4)',
-    zIndex: 1,
+    zIndex: 5,
+    elevation: 5,
   },
   sidebar: {
     position: 'absolute',
@@ -427,7 +580,8 @@ const styles = StyleSheet.create({
     backgroundColor: '#0f172a',
     borderLeftWidth: 1,
     borderLeftColor: '#334155',
-    zIndex: 2,
+    zIndex: 20,
+    elevation: 20,
     transform: [{ translateX: 360 }],
   },
   sidebarScroll: {

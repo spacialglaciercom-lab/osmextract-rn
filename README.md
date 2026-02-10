@@ -45,6 +45,18 @@ Then scan the QR code with Expo Go (Android) or the Camera app (iOS).
 - `lib/overpass.js` – Overpass API query building and OSM processing
 - `lib/export.js` – GeoJSON/CSV export helpers
 
+## Privacy policy
+
+The app’s privacy policy is in [PRIVACY.md](./PRIVACY.md). For **App Store / Google Play** you need a **public URL** that opens the policy in a browser. Good options:
+
+| Where to host | Example URL |
+|---------------|-------------|
+| **GitHub** (if repo is public) | Enable GitHub Pages in repo Settings → Pages → source: main, folder: / (root) or /docs. Then use: `https://YOUR_USERNAME.github.io/osmextract-rn/` and put `PRIVACY.md` as `docs/PRIVACY.md` and rename to `docs/index.html` or use a viewer like [md-to-html](https://github.com/nicothin/md-to-html), or link directly to the raw file: `https://github.com/YOUR_USERNAME/osmextract-rn/blob/main/PRIVACY.md` (readable but not pretty). |
+| **Expo / your website** | Host `PRIVACY.md` (or an HTML version) on any site you control, e.g. `https://yourdomain.com/osmextract-rn-privacy` or a path under your main site. |
+| **Free static host** | Netlify, Vercel, or GitHub Pages: deploy a single page that shows the policy (e.g. convert PRIVACY.md to HTML) and use that URL. |
+
+Use the **same URL** in your app (e.g. “Privacy policy” in About/Settings) and in the store listing privacy policy field.
+
 ## Original
 
 Based on the web version in `C:\Users\drone\Downloads\osmextract-main` (Leaflet + Overpass API).
